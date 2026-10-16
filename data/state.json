@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "chains": {
+    "ethereum": {
+      "lastScannedBlock": "26194029",
+      "seen": []
+    },
+    "arbitrum": {
+      "lastScannedBlock": "514887187",
+      "seen": []
+    },
+    "base": {
+      "lastScannedBlock": "52614187",
+      "seen": []
+    }
+  }
+}
