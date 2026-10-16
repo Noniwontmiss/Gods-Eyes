@@ -62,7 +62,7 @@ const CHAINS = [
   }
 ];
 const STATE_FILE = path.join(
-  process.env.DATA_DIR || path.join(__dirname, "data"),
+  process.env.DATA_DIR || "/data",
   "state.json"
 );
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 3000);
