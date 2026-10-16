@@ -61,8 +61,10 @@ const CHAINS = [
     currency: "DEGEN"
   }
 ];
-
-const STATE_FILE = path.join(__dirname, "data", "state.json");
+const STATE_FILE = path.join(
+  process.env.DATA_DIR || path.join(__dirname, "data"),
+  "state.json"
+);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 3000);
 const CONFIRMATIONS = Number(process.env.CONFIRMATIONS || 1);
 const BLOCK_CHUNK_SIZE = Number(process.env.BLOCK_CHUNK_SIZE || 1000);
