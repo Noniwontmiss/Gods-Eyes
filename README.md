@@ -1,8 +1,8 @@
-# POIDH Telegram Watcher
+# GODSEYE Watcher
 
-An independent watcher for POIDH. It does NOT modify or depend on the POIDH application repository at runtime.
+An independent watcher for Apps like POIDH. It does NOT modify or depend on the POIDH application repository at runtime.
 
-It watches the POIDH `BountyCreated` contract event on:
+It watches Bounty apps like POIDH `BountyCreated` contract event on:
 
 - Ethereum
 - Arbitrum One
