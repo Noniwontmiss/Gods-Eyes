@@ -353,13 +353,13 @@ async function main() {
 
   const state = loadState();
 
-  log("🦅 GodsEye starting...");
+  log("🦅 GodEye starting...");
   log(`Polling every ${POLL_INTERVAL_MS}ms; confirmations=${CONFIRMATIONS}`);
 
   // Send a startup notification only if explicitly requested.
   if (String(process.env.SEND_STARTUP_TEST).toLowerCase() === "true") {
     await sendTelegram(
-      "🦅 <b>GodsEye Online</b>\n\nBlockchain monitoring is active."
+      "🦅 <b>GodEye Online</b>\n\nBlockchain monitoring is active."
     );
   }
 
