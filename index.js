@@ -140,7 +140,7 @@ async function getUsdEquivalent(amount, chain) {
         }
       };
     } catch (error) {
-      log(`âš ï¸ Could not refresh token prices: ${error.message}`);
+      log(`🐞 Could not refresh token prices: ${error.message}`);
       // Retain the last successful cached prices if the API is temporarily unavailable.
       if (!cachedPrices.fetchedAt) return "";
     }
@@ -171,19 +171,19 @@ async function buildTelegramMessage(chain, args, txHash) {
   const usdEquivalent = await getUsdEquivalent(args.amount, chain);
 
   return [
-    "ðŸš¨ <b>NEW POIDH BOUNTY</b>",
+    "🚨 <b>NEW BOUNTY!!</b>",
     "",
-    `ðŸ“Œ <b>${title}</b>`,
-    `ðŸ’° <b>${escapeHtml(formatAmount(args.amount, chain) + usdEquivalent)}</b>`,
-    `â›“ <b>${escapeHtml(chain.name)}</b>`,
-    `ðŸ‘¤ <code>${shortenAddress(args.issuer)}</code>`,
-    `ðŸ†” <code>${frontendId.toString()}</code>`,
-    `ðŸŽ¯ ${escapeHtml(openLabel)}`,
+    `📌 <b>${title}</b>`,
+    `💰 <b>${escapeHtml(formatAmount(args.amount, chain) + usdEquivalent)}</b>`,
+    `⛓ <b>${escapeHtml(chain.name)}</b>`,
+    `👤 <code>${shortenAddress(args.issuer)}</code>`,
+    `🆔 <code>${frontendId.toString()}</code>`,
+    `🎯 ${escapeHtml(openLabel)}`,
     description ? "" : null,
-    description ? `ðŸ“ ${escapeHtml(description)}` : null,
+    description ? `📝 ${escapeHtml(description)}` : null,
     "",
-    `ðŸ”— <a href="${bountyUrl(chain, frontendId)}">View bounty</a>`,
-    `ðŸ” <a href="${chain.explorer}${txHash}">View transaction</a>`
+    `🔗 <a href="${bountyUrl(chain, frontendId)}">View bounty</a>`,
+    `🔍 <a href="${chain.explorer}${txHash}">View transaction</a>`
   ].filter((x) => x !== null).join("\n");
 }
 
@@ -310,10 +310,10 @@ async function processRange(chain, client, state, fromBlock, toBlock) {
       saveState(state);
 
       log(
-        `âœ… ${chain.name}: notified bounty ${args.id.toString()} (${logItem.transactionHash}:${logItem.logIndex})`
+        `⛓️ ${chain.name}: notified bounty ${args.id.toString()} (${logItem.transactionHash}:${logItem.logIndex})`
       );
     } catch (error) {
-      log(`âŒ ${chain.name}: failed to notify ${key}: ${error.message}`);
+      log(`⛓️ ${chain.name}: failed to notify ${key}: ${error.message}`);
       throw error;
     }
   }
@@ -353,13 +353,13 @@ async function main() {
 
   const state = loadState();
 
-  log("ðŸš€ POIDH Telegram watcher starting");
+  log("🦅 GodsEye starting...");
   log(`Polling every ${POLL_INTERVAL_MS}ms; confirmations=${CONFIRMATIONS}`);
 
   // Send a startup notification only if explicitly requested.
   if (String(process.env.SEND_STARTUP_TEST).toLowerCase() === "true") {
     await sendTelegram(
-      "ðŸŸ¢ <b>POIDH watcher online</b>\n\nBlockchain monitoring is active."
+      "🦅 <b>GodsEye Online</b>\n\nBlockchain monitoring is active."
     );
   }
 
