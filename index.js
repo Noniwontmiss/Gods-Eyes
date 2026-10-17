@@ -61,10 +61,8 @@ const CHAINS = [
     currency: "DEGEN"
   }
 ];
-const STATE_FILE = path.join(
-  process.env.DATA_DIR || "/data",
-  "state.json"
-);
+
+const STATE_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, "data"), "state.json");
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 3000);
 const CONFIRMATIONS = Number(process.env.CONFIRMATIONS || 1);
 const BLOCK_CHUNK_SIZE = Number(process.env.BLOCK_CHUNK_SIZE || 1000);
@@ -105,8 +103,14 @@ function eventKey(logItem) {
   return `${logItem.transactionHash}:${String(logItem.logIndex)}`;
 }
 
-function bountyUrl(chain, id) {
-  return `https://poidh.xyz/${chain.slug}/bounty/${id.toString()}`;
+function frontendBountyId(chain, contractId) {
+  // POIDH's frontend IDs include historical v2 bounty offsets.
+  const offsets = { ethereum: 0n, arbitrum: 180n, base: 986n, degen: 1197n };
+  return contractId + (offsets[chain.key] ?? 0n);
+}
+
+function bountyUrl(chain, frontendId) {
+  return `https://poidh.xyz/${chain.slug}/bounty/${frontendId.toString()}`;
 }
 
 function formatAmount(amount, chain) {
@@ -114,31 +118,72 @@ function formatAmount(amount, chain) {
   return `${value} ${chain.currency}`;
 }
 
-function buildTelegramMessage(chain, args, txHash) {
-  const id = args.id;
+const PRICE_CACHE_MS = 60_000;
+let cachedPrices = { fetchedAt: 0, prices: {} };
+
+async function getUsdEquivalent(amount, chain) {
+  // Price data is cached for 60 seconds to avoid one price request per bounty.
+  const now = Date.now();
+  if (now - cachedPrices.fetchedAt > PRICE_CACHE_MS) {
+    try {
+      const response = await fetch(
+        "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,degen-base&vs_currencies=usd",
+        { headers: { accept: "application/json" } }
+      );
+      if (!response.ok) throw new Error(`CoinGecko HTTP ${response.status}`);
+      const data = await response.json();
+      cachedPrices = {
+        fetchedAt: now,
+        prices: {
+          ETH: Number(data?.ethereum?.usd) || 0,
+          DEGEN: Number(data?.["degen-base"]?.usd) || 0
+        }
+      };
+    } catch (error) {
+      log(`âš ï¸ Could not refresh token prices: ${error.message}`);
+      // Retain the last successful cached prices if the API is temporarily unavailable.
+      if (!cachedPrices.fetchedAt) return "";
+    }
+  }
+
+  const unitPrice = cachedPrices.prices[chain.currency];
+  if (!unitPrice) return "";
+  const tokenAmount = Number(formatEther(amount));
+  if (!Number.isFinite(tokenAmount)) return "";
+  const usd = tokenAmount * unitPrice;
+  return Number.isFinite(usd) ? ` (~$${usd.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })} USD)` : "";
+}
+
+async function buildTelegramMessage(chain, args, txHash) {
+  const contractId = args.id;
+  const frontendId = frontendBountyId(chain, contractId);
   const title = escapeHtml(args.title || "Untitled bounty");
   const descriptionRaw = String(args.description || "").trim();
   const description =
     descriptionRaw.length > 700
-      ? `${descriptionRaw.slice(0, 700)}…`
+      ? `${descriptionRaw.slice(0, 700)}â€¦`
       : descriptionRaw;
 
   const openLabel = args.isOpenBounty ? "Open bounty" : "Standard bounty";
+  const usdEquivalent = await getUsdEquivalent(args.amount, chain);
 
   return [
-    "🚨 <b>NEW POIDH BOUNTY</b>",
+    "ðŸš¨ <b>NEW POIDH BOUNTY</b>",
     "",
-    `📌 <b>${title}</b>`,
-    `💰 <b>${escapeHtml(formatAmount(args.amount, chain))}</b>`,
-    `⛓ <b>${escapeHtml(chain.name)}</b>`,
-    `👤 <code>${shortenAddress(args.issuer)}</code>`,
-    `🆔 <code>${id.toString()}</code>`,
-    `🎯 ${escapeHtml(openLabel)}`,
+    `ðŸ“Œ <b>${title}</b>`,
+    `ðŸ’° <b>${escapeHtml(formatAmount(args.amount, chain) + usdEquivalent)}</b>`,
+    `â›“ <b>${escapeHtml(chain.name)}</b>`,
+    `ðŸ‘¤ <code>${shortenAddress(args.issuer)}</code>`,
+    `ðŸ†” <code>${frontendId.toString()}</code>`,
+    `ðŸŽ¯ ${escapeHtml(openLabel)}`,
     description ? "" : null,
-    description ? `📝 ${escapeHtml(description)}` : null,
+    description ? `ðŸ“ ${escapeHtml(description)}` : null,
     "",
-    `🔗 <a href="${bountyUrl(chain, id)}">View bounty</a>`,
-    `🔍 <a href="${chain.explorer}${txHash}">View transaction</a>`
+    `ðŸ”— <a href="${bountyUrl(chain, frontendId)}">View bounty</a>`,
+    `ðŸ” <a href="${chain.explorer}${txHash}">View transaction</a>`
   ].filter((x) => x !== null).join("\n");
 }
 
@@ -251,7 +296,7 @@ async function processRange(chain, client, state, fromBlock, toBlock) {
     const args = logItem.args;
 
     try {
-      const message = buildTelegramMessage(
+      const message = await buildTelegramMessage(
         chain,
         args,
         logItem.transactionHash
@@ -265,10 +310,10 @@ async function processRange(chain, client, state, fromBlock, toBlock) {
       saveState(state);
 
       log(
-        `✅ ${chain.name}: notified bounty ${args.id.toString()} (${logItem.transactionHash}:${logItem.logIndex})`
+        `âœ… ${chain.name}: notified bounty ${args.id.toString()} (${logItem.transactionHash}:${logItem.logIndex})`
       );
     } catch (error) {
-      log(`❌ ${chain.name}: failed to notify ${key}: ${error.message}`);
+      log(`âŒ ${chain.name}: failed to notify ${key}: ${error.message}`);
       throw error;
     }
   }
@@ -308,13 +353,13 @@ async function main() {
 
   const state = loadState();
 
-  log("🚀 POIDH Telegram watcher starting");
+  log("ðŸš€ POIDH Telegram watcher starting");
   log(`Polling every ${POLL_INTERVAL_MS}ms; confirmations=${CONFIRMATIONS}`);
 
   // Send a startup notification only if explicitly requested.
   if (String(process.env.SEND_STARTUP_TEST).toLowerCase() === "true") {
     await sendTelegram(
-      "🟢 <b>POIDH watcher online</b>\n\nBlockchain monitoring is active."
+      "ðŸŸ¢ <b>POIDH watcher online</b>\n\nBlockchain monitoring is active."
     );
   }
 
@@ -323,7 +368,7 @@ async function main() {
       try {
         await scanChain(chain, state);
       } catch (error) {
-        log(`⚠️ ${chain.name}: ${error.message}`);
+        log(`âš ï¸ ${chain.name}: ${error.message}`);
       }
     }
 
