@@ -111,20 +111,8 @@ function eventKey(logItem) {
   return `${logItem.transactionHash}:${String(logItem.logIndex)}`;
 }
 
-const BOUNTY_ID_OFFSETS = {
-  ethereum: 0n,
-  arbitrum: 180n,
-  base: 986n,
-  degen: 1197n,
-};
-
-function frontendBountyId(chain, contractId) {
-  return contractId + (BOUNTY_ID_OFFSETS[chain.key] || 0n);
-}
-
-function bountyUrl(chain, contractId) {
-  const id = frontendBountyId(chain, contractId);
-  return https://poidh.xyz/${chain.slug}/bounty/${id.toString()};
+function bountyUrl(chain, id) {
+  return `https://poidh.xyz/${chain.slug}/bounty/${id.toString()}`;
 }
 
 function formatAmount(amount, chain) {
