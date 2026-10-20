@@ -9,6 +9,7 @@ const {
   formatEther,
   isAddress,
 } = require("viem");
+
 const { mainnet, arbitrum, base, degen } = require("viem/chains");
 
 const EVENT_ABI = parseAbi([
@@ -62,10 +63,15 @@ const CHAINS = [
   }
 ];
 
-const STATE_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, "data"), "state.json");
+const STATE_FILE = path.join(
+  process.env.DATA_DIR || path.join(__dirname, "data"),
+  "state.json"
+);
+
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 3000);
 const CONFIRMATIONS = Number(process.env.CONFIRMATIONS || 1);
 const BLOCK_CHUNK_SIZE = Number(process.env.BLOCK_CHUNK_SIZE || 1000);
+
 const START_FROM_CURRENT =
   String(process.env.START_FROM_CURRENT || "true").toLowerCase() === "true";
 
@@ -83,7 +89,9 @@ function loadState() {
 
 function saveState(state) {
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+
   const tmp = `${STATE_FILE}.tmp`;
+
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
   fs.renameSync(tmp, STATE_FILE);
 }
@@ -103,14 +111,8 @@ function eventKey(logItem) {
   return `${logItem.transactionHash}:${String(logItem.logIndex)}`;
 }
 
-function frontendBountyId(chain, contractId) {
-  // POIDH's frontend IDs include historical v2 bounty offsets.
-  const offsets = { ethereum: 0n, arbitrum: 180n, base: 986n, degen: 1197n };
-  return contractId + (offsets[chain.key] ?? 0n);
-}
-
-function bountyUrl(chain, frontendId) {
-  return `https://poidh.xyz/${chain.slug}/bounty/${frontendId.toString()}`;
+function bountyUrl(chain, id) {
+  return `https://poidh.xyz/${chain.slug}/bounty/${id.toString()}`;
 }
 
 function formatAmount(amount, chain) {
@@ -118,70 +120,108 @@ function formatAmount(amount, chain) {
   return `${value} ${chain.currency}`;
 }
 
-const PRICE_CACHE_MS = 60_000;
-let cachedPrices = { fetchedAt: 0, prices: {} };
+// Cache Farcaster lookups to avoid repeatedly querying the same wallet.
+const farcasterProfileCache = new Map();
 
-async function getUsdEquivalent(amount, chain) {
-  // Price data is cached for 60 seconds to avoid one price request per bounty.
-  const now = Date.now();
-  if (now - cachedPrices.fetchedAt > PRICE_CACHE_MS) {
-    try {
-      const response = await fetch(
-        "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,degen-base&vs_currencies=usd",
-        { headers: { accept: "application/json" } }
-      );
-      if (!response.ok) throw new Error(`CoinGecko HTTP ${response.status}`);
-      const data = await response.json();
-      cachedPrices = {
-        fetchedAt: now,
-        prices: {
-          ETH: Number(data?.ethereum?.usd) || 0,
-          DEGEN: Number(data?.["degen-base"]?.usd) || 0
-        }
-      };
-    } catch (error) {
-      log(`🐞 Could not refresh token prices: ${error.message}`);
-      // Retain the last successful cached prices if the API is temporarily unavailable.
-      if (!cachedPrices.fetchedAt) return "";
-    }
+async function lookupFarcasterProfile(address) {
+  const key = String(address || "").toLowerCase();
+
+  if (!key) return null;
+
+  if (farcasterProfileCache.has(key)) {
+    return farcasterProfileCache.get(key);
   }
 
-  const unitPrice = cachedPrices.prices[chain.currency];
-  if (!unitPrice) return "";
-  const tokenAmount = Number(formatEther(amount));
-  if (!Number.isFinite(tokenAmount)) return "";
-  const usd = tokenAmount * unitPrice;
-  return Number.isFinite(usd) ? ` (~$${usd.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  })} USD)` : "";
+  try {
+    const response = await fetch(
+      `https://api.web3.bio/profile/farcaster/${encodeURIComponent(address)}`,
+      {
+        signal: AbortSignal.timeout(4000)
+      }
+    );
+
+    if (!response.ok) {
+      farcasterProfileCache.set(key, null);
+      return null;
+    }
+
+    const data = await response.json();
+
+    const identity =
+      data?.identity ||
+      data?.username ||
+      data?.fname ||
+      null;
+
+    const displayName =
+      data?.displayName ||
+      data?.display_name ||
+      identity;
+
+    const profile = identity
+      ? {
+          identity: String(identity).replace(/^@/, ""),
+          displayName: String(displayName || identity)
+        }
+      : null;
+
+    farcasterProfileCache.set(key, profile);
+
+    return profile;
+  } catch {
+    // Farcaster lookup failures must not stop bounty notifications.
+    return null;
+  }
+}
+
+// Convert a transaction explorer base URL into an address explorer URL.
+function addressExplorerUrl(chain, address) {
+  return `${chain.explorer.replace(/\/tx\/?$/, "/address/")}${address}`;
 }
 
 async function buildTelegramMessage(chain, args, txHash) {
-  const contractId = args.id;
-  const frontendId = frontendBountyId(chain, contractId);
-  const title = escapeHtml(args.title || "Untitled bounty");
-  const descriptionRaw = String(args.description || "").trim();
-  const description = descriptionRaw;
+  const id = args.id;
 
-  const openLabel = args.isOpenBounty ? "Open bounty" : "Standard bounty";
-  const usdEquivalent = await getUsdEquivalent(args.amount, chain);
+  const title = escapeHtml(args.title || "Untitled bounty");
+
+  // Preserve the complete on-chain description.
+  const description = String(args.description || "").trim();
+
+  const issuer = String(args.issuer || "");
+
+  const issuerLink =
+    `<a href="${addressExplorerUrl(chain, issuer)}">` +
+    `${escapeHtml(shortenAddress(issuer))}</a>`;
+
+  // Attempt to find a Farcaster account associated with the issuer wallet.
+  const farcasterProfile = await lookupFarcasterProfile(issuer);
+
+  const farcasterLine = farcasterProfile
+    ? `🟪 <b>Farcaster:</b> <a href="https://farcaster.xyz/${encodeURIComponent(farcasterProfile.identity)}">${escapeHtml(farcasterProfile.displayName)} (@${escapeHtml(farcasterProfile.identity)})</a>`
+    : null;
+
+  const openLabel = args.isOpenBounty
+    ? "Open bounty"
+    : "Standard bounty";
 
   return [
-    "🚨 <b>NEW BOUNTY!!</b>",
+    "🚨 <b>NEW BOUNTY!</b>",
     "",
     `📌 <b>${title}</b>`,
-    `💰 <b>${escapeHtml(formatAmount(args.amount, chain) + usdEquivalent)}</b>`,
+    `💰 <b>${escapeHtml(formatAmount(args.amount, chain))}</b>`,
     `⛓ <b>${escapeHtml(chain.name)}</b>`,
-    `👤 <code>${shortenAddress(args.issuer)}</code>`,
-    `🆔 <code>${frontendId.toString()}</code>`,
+    `👤 <b>Issuer:</b> ${issuerLink}`,
+    farcasterLine,
+    `🆔 <code>${id.toString()}</code>`,
     `🎯 ${escapeHtml(openLabel)}`,
     description ? "" : null,
     description ? `📝 ${escapeHtml(description)}` : null,
     "",
-    `🔗 <a href="${bountyUrl(chain, frontendId)}">View bounty</a>`,
+    `🔗 <a href="${bountyUrl(chain, id)}">View bounty</a>`,
     `🔍 <a href="${chain.explorer}${txHash}">View transaction</a>`
-  ].filter((x) => x !== null).join("\n");
+  ]
+    .filter((x) => x !== null)
+    .join("\n");
 }
 
 async function sendTelegram(text) {
@@ -189,14 +229,18 @@ async function sendTelegram(text) {
   const chatId = process.env.TELEGRAM_CHAT_ID;
 
   if (!token || !chatId) {
-    throw new Error("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required");
+    throw new Error(
+      "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required"
+    );
   }
 
   const response = await fetch(
     `https://api.telegram.org/bot${token}/sendMessage`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json"
+      },
       body: JSON.stringify({
         chat_id: chatId,
         text,
@@ -221,19 +265,30 @@ function validateConfig() {
   const missing = [];
 
   for (const chain of CHAINS) {
-    if (!process.env[chain.env]) missing.push(chain.env);
+    if (!process.env[chain.env]) {
+      missing.push(chain.env);
+    }
   }
 
-  if (!process.env.TELEGRAM_BOT_TOKEN) missing.push("TELEGRAM_BOT_TOKEN");
-  if (!process.env.TELEGRAM_CHAT_ID) missing.push("TELEGRAM_CHAT_ID");
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
+    missing.push("TELEGRAM_BOT_TOKEN");
+  }
+
+  if (!process.env.TELEGRAM_CHAT_ID) {
+    missing.push("TELEGRAM_CHAT_ID");
+  }
 
   if (missing.length) {
-    throw new Error(`Missing environment variables: ${missing.join(", ")}`);
+    throw new Error(
+      `Missing environment variables: ${missing.join(", ")}`
+    );
   }
 
   for (const chain of CHAINS) {
     if (!isAddress(chain.contract)) {
-      throw new Error(`Invalid contract address for ${chain.name}`);
+      throw new Error(
+        `Invalid contract address for ${chain.name}`
+      );
     }
   }
 }
@@ -244,7 +299,7 @@ function createClient(chain) {
     transport: http(process.env[chain.env], {
       retryCount: 3,
       retryDelay: 1000
-    }),
+    })
   });
 }
 
@@ -252,11 +307,15 @@ async function initializeChainState(chain, client, state) {
   if (state.chains[chain.key]) return;
 
   const current = await client.getBlockNumber();
+
   let startBlock = current;
 
   if (!START_FROM_CURRENT) {
     const configured = process.env[chain.startEnv];
-    startBlock = configured ? BigInt(configured) : current;
+
+    startBlock = configured
+      ? BigInt(configured)
+      : current;
   }
 
   state.chains[chain.key] = {
@@ -265,10 +324,19 @@ async function initializeChainState(chain, client, state) {
   };
 
   saveState(state);
-  log(`${chain.name}: starting at block ${startBlock.toString()}`);
+
+  log(
+    `${chain.name}: starting at block ${startBlock.toString()}`
+  );
 }
 
-async function processRange(chain, client, state, fromBlock, toBlock) {
+async function processRange(
+  chain,
+  client,
+  state,
+  fromBlock,
+  toBlock
+) {
   const logs = await client.getLogs({
     address: chain.contract,
     event: EVENT_ABI[0],
@@ -278,7 +346,9 @@ async function processRange(chain, client, state, fromBlock, toBlock) {
 
   if (!logs.length) return;
 
-  log(`${chain.name}: found ${logs.length} BountyCreated event(s) in ${fromBlock}-${toBlock}`);
+  log(
+    `${chain.name}: found ${logs.length} BountyCreated event(s) in ${fromBlock}-${toBlock}`
+  );
 
   const chainState = state.chains[chain.key];
   const seenSet = new Set(chainState.seen || []);
@@ -302,15 +372,19 @@ async function processRange(chain, client, state, fromBlock, toBlock) {
       await sendTelegram(message);
 
       seenSet.add(key);
+
       chainState.seen = Array.from(seenSet).slice(-5000);
 
       saveState(state);
 
       log(
-        `⛓️ ${chain.name}: notified bounty ${args.id.toString()} (${logItem.transactionHash}:${logItem.logIndex})`
+        `✅ ${chain.name}: notified bounty ${args.id.toString()} (${logItem.transactionHash}:${logItem.logIndex})`
       );
     } catch (error) {
-      log(`⛓️ ${chain.name}: failed to notify ${key}: ${error.message}`);
+      log(
+        `❌ ${chain.name}: failed to notify ${key}: ${error.message}`
+      );
+
       throw error;
     }
   }
@@ -318,14 +392,17 @@ async function processRange(chain, client, state, fromBlock, toBlock) {
 
 async function scanChain(chain, state) {
   const client = createClient(chain);
+
   await initializeChainState(chain, client, state);
 
   const chainState = state.chains[chain.key];
+
   const latest = await client.getBlockNumber();
 
   if (latest <= BigInt(CONFIRMATIONS)) return;
 
   const safeLatest = latest - BigInt(CONFIRMATIONS);
+
   let fromBlock = BigInt(chainState.lastScannedBlock) + 1n;
 
   if (fromBlock > safeLatest) return;
@@ -336,9 +413,16 @@ async function scanChain(chain, state) {
         ? safeLatest
         : fromBlock + BigInt(BLOCK_CHUNK_SIZE) - 1n;
 
-    await processRange(chain, client, state, fromBlock, toBlock);
+    await processRange(
+      chain,
+      client,
+      state,
+      fromBlock,
+      toBlock
+    );
 
     chainState.lastScannedBlock = toBlock.toString();
+
     saveState(state);
 
     fromBlock = toBlock + 1n;
@@ -350,13 +434,18 @@ async function main() {
 
   const state = loadState();
 
-  log("🦅 GodEye starting...");
-  log(`Polling every ${POLL_INTERVAL_MS}ms; confirmations=${CONFIRMATIONS}`);
+  log("🚀 GodEye starting");
+
+  log(
+    `Polling every ${POLL_INTERVAL_MS}ms; confirmations=${CONFIRMATIONS}`
+  );
 
   // Send a startup notification only if explicitly requested.
-  if (String(process.env.SEND_STARTUP_TEST).toLowerCase() === "true") {
+  if (
+    String(process.env.SEND_STARTUP_TEST).toLowerCase() === "true"
+  ) {
     await sendTelegram(
-      "🦅 <b>GodEye Online</b>\n\nBlockchain monitoring is active."
+      "🦅 <b>GodEye Online...</b>\n\nBlockchain monitoring is active."
     );
   }
 
@@ -365,11 +454,13 @@ async function main() {
       try {
         await scanChain(chain, state);
       } catch (error) {
-        log(`âš ï¸ ${chain.name}: ${error.message}`);
+        log(`⚠️ ${chain.name}: ${error.message}`);
       }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    await new Promise((resolve) =>
+      setTimeout(resolve, POLL_INTERVAL_MS)
+    );
   }
 }
 
