@@ -162,10 +162,7 @@ async function buildTelegramMessage(chain, args, txHash) {
   const frontendId = frontendBountyId(chain, contractId);
   const title = escapeHtml(args.title || "Untitled bounty");
   const descriptionRaw = String(args.description || "").trim();
-  const description =
-    descriptionRaw.length > 700
-      ? `${descriptionRaw.slice(0, 700)}â€¦`
-      : descriptionRaw;
+  const description = descriptionRaw;
 
   const openLabel = args.isOpenBounty ? "Open bounty" : "Standard bounty";
   const usdEquivalent = await getUsdEquivalent(args.amount, chain);
