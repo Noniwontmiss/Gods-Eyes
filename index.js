@@ -192,7 +192,7 @@ function addressExplorerUrl(chain, address) {
 }
 
 async function buildTelegramMessage(chain, args, txHash) {
-  const id = args.id;
+  const id = frontendBountyId(chain, args.id);
 
   const title = escapeHtml(args.title || "Untitled bounty");
 
