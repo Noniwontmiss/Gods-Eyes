@@ -125,6 +125,7 @@ function frontendBountyId(chain, contractId) {
 function bountyUrl(chain, contractId) {
   const id = frontendBountyId(chain, contractId);
  return `https://poidh.xyz/${chain.slug}/bounty/${id.toString()}`;
+}
   
 function formatAmount(amount, chain) {
   const value = formatEther(amount);
