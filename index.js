@@ -124,9 +124,9 @@ function frontendBountyId(chain, contractId) {
 
 function bountyUrl(chain, contractId) {
   const id = frontendBountyId(chain, contractId);
- return `https://poidh.xyz/${chain.slug}/bounty/${id.toString()}`;
+  return `https://poidh.xyz/${chain.slug}/bounty/${id.toString()}`;
 }
-  
+
 function formatAmount(amount, chain) {
   const value = formatEther(amount);
   return `${value} ${chain.currency}`;
@@ -134,6 +134,53 @@ function formatAmount(amount, chain) {
 
 // Cache Farcaster lookups to avoid repeatedly querying the same wallet.
 const farcasterProfileCache = new Map();
+const fiatPriceCache = new Map();
+
+async function fetchUsdPrice(assetKey) {
+  const key = String(assetKey || "").toLowerCase();
+
+  if (!key) return null;
+  if (fiatPriceCache.has(key)) return fiatPriceCache.get(key);
+
+  try {
+    const coinId = key === "degen" ? "degen" : "ethereum";
+    const response = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coinId)}&vs_currencies=usd`,
+      {
+        signal: AbortSignal.timeout(4000),
+      }
+    );
+
+    if (!response.ok) {
+      fiatPriceCache.set(key, null);
+      return null;
+    }
+
+    const data = await response.json();
+    const price = data?.[coinId]?.usd ?? null;
+    fiatPriceCache.set(key, price);
+    return price;
+  } catch {
+    fiatPriceCache.set(key, null);
+    return null;
+  }
+}
+
+async function formatAmountWithUsd(amount, chain) {
+  const value = formatEther(amount);
+  const assetKey = chain.currency === "DEGEN" ? "degen" : "ethereum";
+  const price = await fetchUsdPrice(assetKey);
+
+  if (!price) {
+    return `${value} ${chain.currency}`;
+  }
+
+  const usdValue = Number(value) * Number(price);
+
+  return `${value} ${chain.currency} (~$${usdValue.toLocaleString("en-US", {
+    maximumFractionDigits: 2,
+  })})`;
+}
 
 async function lookupFarcasterProfile(address) {
   const key = String(address || "").toLowerCase();
@@ -193,6 +240,7 @@ function addressExplorerUrl(chain, address) {
 
 async function buildTelegramMessage(chain, args, txHash) {
   const id = frontendBountyId(chain, args.id);
+  const bountyLink = bountyUrl(chain, id);
 
   const title = escapeHtml(args.title || "Untitled bounty");
 
@@ -216,11 +264,14 @@ async function buildTelegramMessage(chain, args, txHash) {
     ? "Open bounty"
     : "Standard bounty";
 
+  const amountText = await formatAmountWithUsd(args.amount, chain);
+
   return [
     "🚨 <b>NEW BOUNTY!</b>",
     "",
+    `🔗 ${bountyLink}`,
     `📌 <b>${title}</b>`,
-    `💰 <b>${escapeHtml(formatAmount(args.amount, chain))}</b>`,
+    `💰 <b>${escapeHtml(amountText)}</b>`,
     `⛓ <b>${escapeHtml(chain.name)}</b>`,
     `👤 <b>Issuer:</b> ${issuerLink}`,
     farcasterLine,
@@ -229,7 +280,7 @@ async function buildTelegramMessage(chain, args, txHash) {
     description ? "" : null,
     description ? `📝 ${escapeHtml(description)}` : null,
     "",
-    `🔗 <a href="${bountyUrl(chain, id)}">View bounty</a>`,
+    `🔗 <a href="${bountyLink}">View bounty</a>`,
     `🔍 <a href="${chain.explorer}${txHash}">View transaction</a>`
   ]
     .filter((x) => x !== null)
