@@ -111,14 +111,15 @@ function eventKey(logItem) {
   return `${logItem.transactionHash}:${String(logItem.logIndex)}`;
 }
 
-const BOUNTY_ID_OFFSETS = {
+
+
+function frontendBountyId(chain, contractId) {
+  const BOUNTY_ID_OFFSETS = {
   ethereum: 0n,
   arbitrum: 180n,
   base: 986n,
   degen: 1197n,
 };
-
-function frontendBountyId(chain, contractId) {
   return contractId + (BOUNTY_ID_OFFSETS[chain.key] || 0n);
 }
 
