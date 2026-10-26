@@ -319,9 +319,9 @@ async function buildTelegramMessages(chain, args, txHash) {
     : null;
 
   const header = [
-    "🚨 <b>NEW BOUNTY!</b>",
+    "🔔 <b>NEW BOUNTY !!</b>",
     "",
-    `🔗 ${link}`,
+    ` <a href="${link}">📝</a>`,
     `📌 <b>${title}</b>`,
     `💰 <b>${escapeHtml(amountText)}</b>`,
     `⛓ <b>${escapeHtml(chain.name)}</b>`,
