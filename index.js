@@ -10,7 +10,7 @@ const {
   isAddress,
 } = require("viem");
 
-const { mainnet, arbitrum, base, degen } = require("viem/chains");
+const { mainnet, arbitrum, base } = require("viem/chains");
 
 const EVENT_ABI = parseAbi([
   "event BountyCreated(uint256 indexed id, address indexed issuer, string title, string description, uint256 amount, uint256 createdAt, bool isOpenBounty, uint256 round)"
@@ -49,17 +49,6 @@ const CHAINS = [
     contract: "0x5555fa783936c260f77385b4e153b9725fef1719",
     explorer: "https://basescan.org/tx/",
     currency: "ETH"
-  },
-  {
-    key: "degen",
-    env: "DEGEN_RPC_URL",
-    startEnv: "DEGEN_START_BLOCK",
-    name: "Degen",
-    slug: "degen",
-    chain: degen,
-    contract: "0x18e5585ca7ce31b90bc8bb7aaf84152857ce243f",
-    explorer: "https://explorer.degen.tips/tx/",
-    currency: "DEGEN"
   }
 ];
 
@@ -81,9 +70,21 @@ function log(message, ...args) {
 
 function loadState() {
   try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-  } catch {
-    return { version: 1, chains: {} };
+    const state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+
+    if (!state || !state.chains || typeof state.chains !== "object" ||
+        Array.isArray(state.chains)) {
+      throw new Error("Invalid state.json structure");
+    }
+
+    return state;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return { version: 1, chains: {} };
+    }
+
+    // Do not silently reset the cursor and miss new bounties.
+    throw new Error(`Cannot load ${STATE_FILE}: ${error.message}`);
   }
 }
 
@@ -115,21 +116,93 @@ const BOUNTY_ID_OFFSETS = {
   ethereum: 0n,
   arbitrum: 180n,
   base: 986n,
-  degen: 1197n,
 };
 
 function frontendBountyId(chain, contractId) {
-  return contractId + (BOUNTY_ID_OFFSETS[chain.key] || 0n);
+  return BigInt(contractId) + (BOUNTY_ID_OFFSETS[chain.key] || 0n);
 }
 
 function bountyUrl(chain, contractId) {
   const id = frontendBountyId(chain, contractId);
- return `https://poidh.xyz/${chain.slug}/bounty/${id.toString()}`;
+  return `https://poidh.xyz/${chain.slug}/bounty/${id.toString()}`;
 }
   
 function formatAmount(amount, chain) {
   const value = formatEther(amount);
   return `${value} ${chain.currency}`;
+}
+
+// Refresh USD prices every five minutes, and retry failed lookups after 30 seconds.
+const fiatPriceCache = new Map();
+
+async function fetchUsdPrice(currency) {
+  const key = currency === "DEGEN" ? "degen" : "ethereum";
+  const cached = fiatPriceCache.get(key);
+
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.price;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${key}&vs_currencies=usd`,
+      { signal: AbortSignal.timeout(4000) }
+    );
+
+    if (!response.ok) throw new Error(`Price API: HTTP ${response.status}`);
+
+    const data = await response.json();
+    const price = Number(data?.[key]?.usd);
+
+    if (!Number.isFinite(price) || price <= 0) {
+      throw new Error("Price API returned an invalid price");
+    }
+
+    fiatPriceCache.set(key, { price, expiresAt: Date.now() + 300000 });
+    return price;
+  } catch {
+    fiatPriceCache.set(key, { price: null, expiresAt: Date.now() + 30000 });
+    return null;
+  }
+}
+
+async function formatAmountWithUsd(amount, chain) {
+  const amountText = formatAmount(amount, chain);
+  const price = await fetchUsdPrice(chain.currency);
+
+  if (!price) return amountText;
+
+  const value = Number(formatEther(amount));
+  const usdValue = value * price;
+
+  if (!Number.isFinite(usdValue)) return amountText;
+
+  return `${amountText} (~$${usdValue.toLocaleString("en-US", {
+    maximumFractionDigits: 2
+  })})`;
+}
+
+// Split raw description text before HTML escaping so entities/tags are not cut.
+function splitDescription(description, maxLength = 3400) {
+  const parts = [];
+  let part = "";
+  let size = 0;
+
+  for (const char of description) {
+    const length = escapeHtml(char).length;
+
+    if (size + length > maxLength && part) {
+      parts.push(part);
+      part = "";
+      size = 0;
+    }
+
+    part += char;
+    size += length;
+  }
+
+  if (part) parts.push(part);
+  return parts;
 }
 
 // Cache Farcaster lookups to avoid repeatedly querying the same wallet.
@@ -194,9 +267,10 @@ function addressExplorerUrl(chain, address) {
 async function buildTelegramMessage(chain, args, txHash) {
   const id = frontendBountyId(chain, args.id);
 
-  const title = escapeHtml(args.title || "Untitled bounty");
+  // Keep oversized titles from making even the first notification too long.
+  const title = escapeHtml(String(args.title || "Untitled bounty").slice(0, 500));
 
-  // Preserve the complete on-chain description.
+  // Preserve the complete on-chain description (send it in parts if necessary).
   const description = String(args.description || "").trim();
 
   const issuer = String(args.issuer || "");
@@ -216,26 +290,51 @@ async function buildTelegramMessage(chain, args, txHash) {
     ? "Open bounty"
     : "Standard bounty";
 
-  return [
+  const amountText = await formatAmountWithUsd(args.amount, chain);
+
+  const header = [
     "🚨 <b>NEW BOUNTY!</b>",
     "",
     `📌 <b>${title}</b>`,
-    `💰 <b>${escapeHtml(formatAmount(args.amount, chain))}</b>`,
+    `💰 <b>${escapeHtml(amountText)}</b>`,
     `⛓ <b>${escapeHtml(chain.name)}</b>`,
     `👤 <b>Issuer:</b> ${issuerLink}`,
     farcasterLine,
     `🆔 <code>${id.toString()}</code>`,
-    `🎯 ${escapeHtml(openLabel)}`,
-    description ? "" : null,
-    description ? `📝 ${escapeHtml(description)}` : null,
-    "",
-    `🔗 <a href="${bountyUrl(chain, id)}">View bounty</a>`,
-    `🔍 <a href="${chain.explorer}${txHash}">View transaction</a>`
+    `🎯 ${escapeHtml(openLabel)}`
   ]
     .filter((x) => x !== null)
     .join("\n");
-}
 
+  const footer = [
+    "",
+    // Pass the raw contract ID: bountyUrl() adds the frontend offset once.
+    `🔗 <a href="${bountyUrl(chain, args.id)}">View bounty</a>`,
+    `🔍 <a href="${chain.explorer}${txHash}">View transaction</a>`
+  ].join("\n");
+
+  const message = [
+    header,
+    description ? "" : null,
+    description ? `📝 ${escapeHtml(description)}` : null,
+    footer
+  ]
+    .filter((x) => x !== null)
+    .join("\n");
+
+  // Telegram's 4096-character limit is measured after parsing HTML.
+  // Use a conservative pre-parse limit so each message is accepted.
+  if (message.length <= 3900) return message;
+
+  const parts = splitDescription(description);
+
+  return [
+    `${header}\n\n📝 Full description follows (${parts.length} part(s)).${footer}`,
+    ...parts.map((part, index) =>
+      `📝 <b>Description (${index + 1}/${parts.length})</b>\n\n${escapeHtml(part)}`
+    )
+  ];
+}
 async function sendTelegram(text) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -258,7 +357,8 @@ async function sendTelegram(text) {
         text,
         parse_mode: "HTML",
         disable_web_page_preview: false
-      })
+      }),
+      signal: AbortSignal.timeout(15000)
     }
   );
 
@@ -375,17 +475,35 @@ async function processRange(
     const args = logItem.args;
 
     try {
-      const message = await buildTelegramMessage(
-        chain,
-        args,
-        logItem.transactionHash
-      );
+      // Save each part's progress, so retries don't repeat earlier parts.
+      let pending = chainState.pending;
 
-      await sendTelegram(message);
+      if (!pending || pending.key !== key || !Array.isArray(pending.messages)) {
+        const message = await buildTelegramMessage(
+          chain,
+          args,
+          logItem.transactionHash
+        );
+
+        pending = {
+          key,
+          messages: Array.isArray(message) ? message : [message],
+          nextPart: 0
+        };
+
+        chainState.pending = pending;
+        saveState(state);
+      }
+
+      for (let i = pending.nextPart; i < pending.messages.length; i++) {
+        await sendTelegram(pending.messages[i]);
+        pending.nextPart = i + 1;
+        saveState(state);
+      }
 
       seenSet.add(key);
-
       chainState.seen = Array.from(seenSet).slice(-5000);
+      delete chainState.pending;
 
       saveState(state);
 
