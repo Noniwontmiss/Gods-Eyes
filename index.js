@@ -57,7 +57,7 @@ const STATE_FILE = path.join(
   "state.json"
 );
 
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 3000);
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 60000);
 const CONFIRMATIONS = Number(process.env.CONFIRMATIONS || 1);
 const BLOCK_CHUNK_SIZE = Number(process.env.BLOCK_CHUNK_SIZE || 1000);
 
